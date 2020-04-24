@@ -1,26 +1,65 @@
-const handleSignin = (db, bcrypt) => (req, res) => {
+const jwt = require('jsonwebtoken');
+const redis = require('redis');
+// setup redis
+const redisClient = redis.createClient({
+    host: 'redis'
+});
+
+const handleSignin = (db, bcrypt , req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
-    return res.status(400).json('incorrect form submission');
+    return Promise.reject('incorrect form submission');
   }
-  db.select('email', 'hash').from('login')
+  return db.select('email', 'hash').from('login')
     .where('email', '=', email)
     .then(data => {
       const isValid = bcrypt.compareSync(password, data[0].hash);
       if (isValid) {
         return db.select('*').from('users')
           .where('email', '=', email)
-          .then(user => {
-            res.json(user[0])
-          })
-          .catch(err => res.status(400).json('unable to get user'))
+          .then(user => user[0])
+          .catch(err =>Promise.reject('unable to get user'))
       } else {
-        res.status(400).json('wrong credentials')
+        Promise.reject('wrong credentials')
       }
     })
     .catch(err => res.status(400).json('wrong credentials'))
 }
+const getAuthTokenId =(req , res) => {
+  const {authorization} = req.headers;
+  return redisClient.get(authorization , (err , replay) => {
+      if(err || !replay)
+      {
+        return res.status(400).json('Unauthorized');
+      }
+      return res.json({id : replay})
+  })
+}
+const signinAuthentication = (db , bcrypt) => (req , res) => {
+      const {authorization} = req.headers;
+      return authorization ? getAuthTokenId(req , res) : handleSignin(db , bcrypt , req , res)
+      .then(user => {
+        return user.id && user.email ? createSessions(user) : Promise.reject(user)
+      })
+      .then(session => res.json(session))
+      .catch(error => res.status(400).json(error))
+}
+const setToken = (key , id) => {
+  return Promise.resolve(redisClient.set(key , id));
+}
+const createSessions = (user) => {
+  // JWT token , user data
+  const {email , id} = user;
+  const token = signToken(email);
+  return setToken(token , id).then(() => ({success : true , userId : id , token})).catch(console.log);
+}
 
+const signToken = (email) => {
+  const jwtPayload = {email} ;
+  return jwt.sign(jwtPayload, 'JWT-SECRET' , {expiresIn : '2 days'});
+}
 module.exports = {
-  handleSignin: handleSignin
+  handleSignin: handleSignin,
+  signinAuthentication : signinAuthentication,
+  redisClient : redisClient
 }
